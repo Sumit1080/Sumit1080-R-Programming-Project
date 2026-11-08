@@ -1,0 +1,577 @@
+---
+title: "Education Equality in India"
+output:
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    theme: darkly
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(plotly)
+library(DT)
+library(flexdashboard)
+library(scales)
+
+# Find the processed-data folder whether this Rmd is in the project root
+# or inside a subfolder such as reports/.
+data_dir_candidates <- c(
+  file.path("data", "processed"),
+  file.path("..", "data", "processed")
+)
+
+data_dir <- data_dir_candidates[
+  vapply(data_dir_candidates, function(x) dir.exists(x), logical(1))
+][1]
+
+if (is.na(data_dir)) {
+  stop(
+    "Cannot find data/processed. Keep this Rmd in the project root ",
+    "or one folder below it, and check the project folder structure."
+  )
+}
+
+literacy_raw <- read_csv(
+  file.path(data_dir, "cleaned_literacy_2011.csv"),
+  show_col_types = FALSE
+)
+
+enrolment_raw <- read_csv(
+  file.path(data_dir, "cleaned_2021_22.csv"),
+  show_col_types = FALSE
+)
+
+infrastructure_raw <- read_csv(
+  file.path(data_dir, "infrastructure_analysis_2023_24.csv"),
+  show_col_types = FALSE
+)
+
+# Standardize column names for use throughout the dashboard.
+literacy_data <- literacy_raw %>%
+  filter(toupper(trimws(State)) != "INDIA") %>%
+  transmute(
+    State = State,
+    Male = as.numeric(`Male - All`),
+    Female = as.numeric(`Female - All`),
+    Total = as.numeric(`Persons - All`),
+    Gender_Gap = Male - Female
+  )
+
+boys_col <- grep(
+  "Enrolment of Age Group.*Boys$",
+  names(enrolment_raw),
+  value = TRUE
+)[1]
+
+girls_col <- grep(
+  "Enrolment of Age Group.*Girls$",
+  names(enrolment_raw),
+  value = TRUE
+)[1]
+
+total_col <- grep(
+  "Enrolment of Age Group.*Total$",
+  names(enrolment_raw),
+  value = TRUE
+)[1]
+
+if (any(is.na(c(boys_col, girls_col, total_col)))) {
+  stop("Expected Boys, Girls and Total enrolment columns were not found.")
+}
+
+enrolment_data <- enrolment_raw %>%
+  filter(toupper(trimws(State)) != "INDIA") %>%
+  transmute(
+    State = State,
+    Boys = as.numeric(.data[[boys_col]]),
+    Girls = as.numeric(.data[[girls_col]]),
+    Total = as.numeric(.data[[total_col]])
+  )
+
+infrastructure_data <- infrastructure_raw %>%
+  filter(toupper(trimws(State)) != "INDIA") %>%
+  mutate(
+    across(
+      c(
+        Total_Schools, Total_Enrolments, Total_Teachers, PTR,
+        Avg_Teachers, Avg_Enrolments, Zero_Enrolment_Schools,
+        Single_Teacher_Schools, Zero_Enrolment_Percentage,
+        Single_Teacher_Percentage
+      ),
+      as.numeric
+    )
+  )
+
+# A single selection controls the relevant charts across the dashboard.
+state_choices <- sort(unique(infrastructure_data$State))
+```
+
+# Overview
+
+```{r}
+selectInput(
+  "selected_state",
+  "Select State / UT",
+  choices = c("All States / UTs", state_choices),
+  selected = "All States / UTs",
+  width = "100%"
+)
+```
+
+```{r}
+selected_rows <- reactive({
+  req(input$selected_state)
+
+  if (input$selected_state == "All States / UTs") {
+    return(list(
+      literacy = literacy_data,
+      enrolment = enrolment_data,
+      infrastructure = infrastructure_data
+    ))
+  }
+
+  list(
+    literacy = filter(literacy_data, State == input$selected_state),
+    enrolment = filter(enrolment_data, State == input$selected_state),
+    infrastructure = filter(infrastructure_data, State == input$selected_state)
+  )
+})
+```
+
+Row
+-------------------------------------
+
+### States and UTs
+
+```{r}
+valueBox(
+  value = n_distinct(literacy_data$State),
+  caption = "States and UTs analysed",
+  icon = "fa-map"
+)
+```
+
+### Total Schools
+
+```{r}
+valueBox(
+  value = comma(sum(infrastructure_data$Total_Schools, na.rm = TRUE)),
+  caption = "Schools (UDISE 2023-24)",
+  icon = "fa-school"
+)
+```
+
+### Total Students
+
+```{r}
+valueBox(
+  value = comma(sum(infrastructure_data$Total_Enrolments, na.rm = TRUE)),
+  caption = "Students (UDISE 2023-24)",
+  icon = "fa-users"
+)
+```
+
+### Total Teachers
+
+```{r}
+valueBox(
+  value = comma(sum(infrastructure_data$Total_Teachers, na.rm = TRUE)),
+  caption = "Teachers (UDISE 2023-24)",
+  icon = "fa-chalkboard-teacher"
+)
+```
+
+Row
+-------------------------------------
+
+### Boys and Girls Enrolment
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$enrolment %>%
+    summarise(
+      Boys = sum(Boys, na.rm = TRUE),
+      Girls = sum(Girls, na.rm = TRUE)
+    ) %>%
+    pivot_longer(everything(), names_to = "Gender", values_to = "Students")
+
+  plot_ly(
+    d, labels = ~Gender, values = ~Students,
+    type = "pie", hole = 0.58,
+    textinfo = "label+percent",
+    marker = list(colors = c("#22d3ee", "#f472b6"))
+  ) %>%
+    layout(
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white"),
+      showlegend = FALSE
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Literacy Gender Comparison
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$literacy %>%
+    pivot_longer(
+      cols = c(Male, Female),
+      names_to = "Gender",
+      values_to = "Literacy"
+    )
+
+  plot_ly(
+    d, x = ~State, y = ~Literacy,
+    color = ~Gender, type = "bar",
+    colors = c(Male = "#22d3ee", Female = "#f472b6")
+  ) %>%
+    layout(
+      barmode = "group",
+      yaxis = list(title = "Literacy (%)", range = c(0, 100)),
+      xaxis = list(title = "", tickangle = -35),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+# Literacy Analysis
+
+Row
+-------------------------------------
+
+### Male vs Female Literacy by State
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$literacy
+
+  plot_ly(d, x = ~Male, y = ~Female, text = ~State,
+          type = "scatter", mode = "markers",
+          marker = list(size = 10, color = "#22d3ee"),
+          hovertemplate = paste(
+            "<b>%{text}</b><br>Male: %{x:.1f}%<br>",
+            "Female: %{y:.1f}%<extra></extra>"
+          )) %>%
+    add_trace(
+      x = c(0, 100), y = c(0, 100),
+      type = "scatter", mode = "lines",
+      line = list(dash = "dash", color = "#f472b6"),
+      name = "Equal literacy reference"
+    ) %>%
+    layout(
+      xaxis = list(title = "Male literacy (%)", range = c(0, 100)),
+      yaxis = list(title = "Female literacy (%)", range = c(0, 100)),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Literacy Gender Gap
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$literacy %>%
+    arrange(desc(Gender_Gap))
+
+  plot_ly(
+    d, x = ~reorder(State, Gender_Gap), y = ~Gender_Gap,
+    type = "bar", marker = list(color = "#f59e0b")
+  ) %>%
+    layout(
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Male minus female literacy (percentage points)"),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Literacy Data Table
+
+```{r}
+renderDT({
+  datatable(
+    selected_rows()$literacy,
+    rownames = FALSE,
+    options = list(pageLength = 10, scrollX = TRUE)
+  )
+})
+```
+
+# Enrolment Analysis
+
+Row
+-------------------------------------
+
+### Boys vs Girls Enrolment
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$enrolment
+
+  plot_ly(d, x = ~State, y = ~Boys,
+          type = "bar", name = "Boys",
+          marker = list(color = "#22d3ee")) %>%
+    add_trace(y = ~Girls, name = "Girls",
+              marker = list(color = "#f472b6")) %>%
+    layout(
+      barmode = "group",
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Students", tickformat = ","),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Total Enrolment by State
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$enrolment %>%
+    arrange(desc(Total))
+
+  plot_ly(
+    d, x = ~reorder(State, Total), y = ~Total,
+    type = "bar", marker = list(color = "#818cf8")
+  ) %>%
+    layout(
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Total enrolment", tickformat = ","),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Enrolment Data Table
+
+```{r}
+renderDT({
+  datatable(
+    selected_rows()$enrolment,
+    rownames = FALSE,
+    options = list(pageLength = 10, scrollX = TRUE)
+  )
+})
+```
+
+# School Infrastructure
+
+Row
+-------------------------------------
+
+### Schools by State
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$infrastructure %>%
+    arrange(desc(Total_Schools))
+
+  plot_ly(
+    d, x = ~reorder(State, Total_Schools), y = ~Total_Schools,
+    type = "bar", marker = list(color = "#22d3ee")
+  ) %>%
+    layout(
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Schools", tickformat = ","),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Pupil-Teacher Ratio
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$infrastructure %>%
+    arrange(desc(PTR))
+
+  plot_ly(
+    d, x = ~reorder(State, PTR), y = ~PTR,
+    type = "bar", marker = list(color = "#a78bfa")
+  ) %>%
+    layout(
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Pupils per teacher"),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Zero-Enrolment and Single-Teacher Schools
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$infrastructure %>%
+    select(State, Zero_Enrolment_Schools, Single_Teacher_Schools) %>%
+    pivot_longer(
+      cols = c(Zero_Enrolment_Schools, Single_Teacher_Schools),
+      names_to = "Indicator",
+      values_to = "Schools"
+    )
+
+  plot_ly(
+    d, x = ~State, y = ~Schools,
+    color = ~Indicator, type = "bar",
+    colors = c(
+      Zero_Enrolment_Schools = "#f59e0b",
+      Single_Teacher_Schools = "#fb7185"
+    )
+  ) %>%
+    layout(
+      barmode = "group",
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Number of schools"),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Infrastructure Data Table
+
+```{r}
+renderDT({
+  datatable(
+    selected_rows()$infrastructure,
+    rownames = FALSE,
+    options = list(pageLength = 10, scrollX = TRUE)
+  )
+})
+```
+
+# Gender Equality
+
+Row
+-------------------------------------
+
+### Male and Female Literacy
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$literacy %>%
+    select(State, Male, Female) %>%
+    pivot_longer(
+      cols = c(Male, Female),
+      names_to = "Gender",
+      values_to = "Literacy"
+    )
+
+  plot_ly(
+    d, x = ~State, y = ~Literacy,
+    color = ~Gender, type = "bar",
+    colors = c(Male = "#22d3ee", Female = "#f472b6")
+  ) %>%
+    layout(
+      barmode = "group",
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Literacy (%)", range = c(0, 100)),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Girls' Share of Enrolment
+
+```{r}
+renderPlotly({
+  d <- selected_rows()$enrolment %>%
+    mutate(Girls_Share = if_else(
+      Total > 0, Girls / Total * 100, NA_real_
+    )) %>%
+    arrange(desc(Girls_Share))
+
+  plot_ly(
+    d, x = ~reorder(State, Girls_Share), y = ~Girls_Share,
+    type = "bar", marker = list(color = "#f472b6")
+  ) %>%
+    layout(
+      xaxis = list(title = "", tickangle = -40),
+      yaxis = list(title = "Girls' share (%)", range = c(0, 100)),
+      paper_bgcolor = "rgba(0,0,0,0)",
+      plot_bgcolor = "rgba(0,0,0,0)",
+      font = list(color = "white")
+    ) %>%
+    config(displayModeBar = FALSE, displaylogo = FALSE)
+})
+```
+
+### Gender Equality Data Table
+
+```{r}
+renderDT({
+  datatable(
+    selected_rows()$literacy %>%
+      select(State, Male, Female, Total, Gender_Gap),
+    rownames = FALSE,
+    options = list(pageLength = 10, scrollX = TRUE)
+  )
+})
+```
+
+# Data Explorer
+
+Row
+-------------------------------------
+
+### Choose a Dataset
+
+```{r}
+selectInput(
+  "explorer_dataset",
+  "Select dataset",
+  choices = c(
+    "Literacy (Census 2011)",
+    "Enrolment (UDISE 2021-22)",
+    "Infrastructure (UDISE 2023-24)"
+  )
+)
+```
+
+### Browse Data
+
+```{r}
+renderDT({
+  chosen <- switch(
+    input$explorer_dataset,
+    "Literacy (Census 2011)" = literacy_data,
+    "Enrolment (UDISE 2021-22)" = enrolment_data,
+    "Infrastructure (UDISE 2023-24)" = infrastructure_data
+  )
+
+  datatable(
+    chosen,
+    filter = "top",
+    rownames = FALSE,
+    options = list(pageLength = 10, scrollX = TRUE)
+  )
+})
+```
